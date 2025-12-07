@@ -1,0 +1,12 @@
+body {
+  font-family: Inter, system-ui, -apple-system, Roboto, Arial;
+  margin: 0;
+  padding: 12px;
+  background: #fafafa;
+}
+input,
+textarea,
+select,
+button {
+  font-family: inherit;
+}
