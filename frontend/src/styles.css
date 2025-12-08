@@ -10,3 +10,11 @@ select,
 button {
   font-family: inherit;
 }
+/* error highlights used by AddWords preview */
+.small {
+  font-size: 12px;
+  color: #666;
+}
+.muted {
+  color: #888;
+}

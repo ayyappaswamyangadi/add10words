@@ -17,7 +17,7 @@ export default function AuthProvider({
     let mounted = true;
     (async () => {
       try {
-        const res = await api.get("/auth/me");
+        const res = await api.get("/auth?action=me");
         if (mounted) setUser(res.data.user);
       } catch (e) {
         console.error("Failed to fetch /auth/me", e);
@@ -31,14 +31,14 @@ export default function AuthProvider({
   }, []);
 
   const login = async (email: string, password: string) => {
-    await api.post("/auth/login", { email, password });
-    const res = await api.get("/auth/me");
+    await api.post("/auth?action=login", { email, password });
+    const res = await api.get("/auth?action=me");
     setUser(res.data.user);
     return res.data.user;
   };
 
   const signup = async (email: string, password: string) => {
-    await api.post("/auth/signup", { email, password });
+    await api.post("/auth?action=signup", { email, password });
     const res = await api.get("/auth/me");
     setUser(res.data.user);
     return res.data.user;
@@ -46,7 +46,7 @@ export default function AuthProvider({
 
   const logout = async () => {
     try {
-      await api.post("/auth/logout");
+      await api.post("/auth?action=logout");
     } catch (e) {
       console.warn(e);
     } finally {

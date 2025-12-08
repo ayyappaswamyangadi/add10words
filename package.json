@@ -1,13 +1,12 @@
 {
-  "name": "daily10words-monorepo",
+  "name": "daily10-monorepo",
   "private": true,
-  "type": "module",
   "workspaces": [
     "frontend",
     "backend"
   ],
   "scripts": {
-    "dev": "concurrently \"npm --prefix backend run dev\" \" npm --prefix frontend run dev\"",
+    "dev": "concurrently \"npm --prefix backend run dev\" \"npm --prefix frontend run dev\"",
     "dev:backend": "npm --prefix backend run dev",
     "dev:frontend": "npm --prefix frontend run dev",
     "start:backend": "npm --prefix backend start",
