@@ -39,7 +39,7 @@ export default function AuthProvider({
 
   const signup = async (email: string, password: string) => {
     await api.post("/auth?action=signup", { email, password });
-    const res = await api.get("/auth/me");
+    const res = await api.get("/auth?action=me");
     setUser(res.data.user);
     return res.data.user;
   };

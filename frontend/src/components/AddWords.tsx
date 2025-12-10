@@ -1,5 +1,5 @@
 // frontend/src/components/AddWords.tsx
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "../auth/useAuth";
 
 type Conflicts = { db: string[]; inBatch: string[] } | null;
@@ -17,20 +17,31 @@ type ApiError = {
 const isApiError = (err: unknown): err is ApiError =>
   typeof err === "object" &&
   err !== null &&
-  "response" in err &&
+  Object.prototype.hasOwnProperty.call(err, "response") &&
   typeof (err as { response?: unknown }).response === "object";
 
 function normalize(word: string) {
   return word.trim();
 }
 
-export default function AddWords() {
+type AddWordsProps = {
+  onAdded?: () => void | Promise<void>;
+};
+
+export default function AddWords({ onAdded }: AddWordsProps = {}) {
   const { api } = useAuth();
   const [text, setText] = useState<string>(""); // raw input
   const [conflicts, setConflicts] = useState<Conflicts>(null);
   const [replacements, setReplacements] = useState<Record<string, string>>({});
   const [message, setMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  // All saved words for this user (fetched from backend) — used for display only
+  const [savedWords, setSavedWords] = useState<
+    Array<{ word: string; wordLower: string }>
+  >([]);
+  const [savedLoading, setSavedLoading] = useState(false);
+  const [savedError, setSavedError] = useState<string | null>(null);
 
   // parse words from raw text into array of trimmed strings
   const parsed = useMemo(() => {
@@ -41,7 +52,7 @@ export default function AddWords() {
       .slice(0, 100); // defensive
   }, [text]);
 
-  // helper: mapping from lower -> list of original occurrences (for display)
+  // mapping from lower -> list of original occurrences (for display)
   const occurrenceMap = useMemo(() => {
     const map = new Map<string, string[]>();
     parsed.forEach((w) => {
@@ -53,34 +64,28 @@ export default function AddWords() {
     return map;
   }, [parsed]);
 
-  // UI state helpers
   const parsedCount = parsed.length;
 
-  // check in-batch duplicates client-side
+  // check in-batch duplicates client-side (efficient)
   const inBatchDupKeys = useMemo(() => {
-    const lowers = parsed.map((w) => w.toLowerCase());
-    return Array.from(
-      new Set(lowers.filter((v, i) => lowers.indexOf(v) !== i))
-    );
+    const counts = new Map<string, number>();
+    parsed.forEach((w) => {
+      const k = w.toLowerCase();
+      counts.set(k, (counts.get(k) || 0) + 1);
+    });
+    return Array.from(counts.entries())
+      .filter(([, c]) => c > 1)
+      .map(([k]) => k);
   }, [parsed]);
-
-  // Build a set of conflict keys for quick checks
-  // const conflictSet = useMemo(() => {
-  //   if (!conflicts) return new Set<string>(inBatchDupKeys);
-  //   return new Set<string>([
-  //     ...conflicts.db,
-  //     ...conflicts.inBatch,
-  //     ...inBatchDupKeys,
-  //   ]);
-  // }, [conflicts, inBatchDupKeys]);
 
   // Build final words after applying replacements (used for validation before submit)
   const buildFinal = () => {
-    // Replace any word whose lower-case exists in replacements map
     return parsed.map((w) => {
       const key = w.toLowerCase();
-      if (replacements[key] !== undefined && replacements[key] !== null) {
-        return replacements[key].trim();
+      const has = Object.prototype.hasOwnProperty.call(replacements, key);
+      const rep = has ? replacements[key] : undefined;
+      if (has && rep !== undefined && rep !== null && rep.trim() !== "") {
+        return rep.trim();
       }
       return w.trim();
     });
@@ -95,14 +100,47 @@ export default function AddWords() {
     return new Set(lowers).size === 10;
   };
 
-  // Visual helpers for showing which words are duplicates
-  const isDbDuplicate = (wordLower: string) =>
-    conflicts?.db?.includes(wordLower);
-  const isInBatchDuplicate = (wordLower: string) =>
-    inBatchDupKeys.includes(wordLower) ||
-    conflicts?.inBatch?.includes(wordLower);
+  // fetch saved words for the current user (for display)
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setSavedLoading(true);
+      setSavedError(null);
+      try {
+        const res = await api.get("/words");
+        const docs: any[] = res.data ?? [];
+        if (cancelled) return;
+        const arr = docs.map((d) => ({
+          word: String(d.word || "").trim(),
+          wordLower: String(
+            d.wordLower || String(d.word || "").toLowerCase()
+          ).toLowerCase(),
+        }));
+        setSavedWords(arr);
+      } catch {
+        if (!cancelled) {
+          setSavedError("Failed to load saved words");
+          setSavedWords([]);
+        }
+      } finally {
+        if (!cancelled) setSavedLoading(false);
+      }
+    };
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [api]);
 
-  // Handler: ask backend to validate (checking DB duplicates)
+  // helper to initialize replacement map from list of lowercase keys
+  const initReplacementsFromList = (keys: string[]) => {
+    const map: Record<string, string> = {};
+    keys.forEach((k) => (map[k.toLowerCase()] = ""));
+    return map;
+  };
+
+  // Handler: ask backend to validate (global DB check).
+  // We still show in-batch duplicates immediately without calling the server.
   const handleValidate = async () => {
     setMessage(null);
     setConflicts(null);
@@ -113,12 +151,9 @@ export default function AddWords() {
     }
 
     if (inBatchDupKeys.length > 0) {
-      // preflight: show in-batch duplicates immediately
-      setConflicts({ db: [], inBatch: inBatchDupKeys });
-      // initialize replacements for keys
-      const map: Record<string, string> = {};
-      inBatchDupKeys.forEach((k) => (map[k] = ""));
-      setReplacements(map);
+      const inBatchLower = inBatchDupKeys.map((k) => k.toLowerCase());
+      setConflicts({ db: [], inBatch: inBatchLower });
+      setReplacements(initReplacementsFromList(inBatchLower));
       setMessage("Please replace the duplicate words shown below.");
       return;
     }
@@ -126,17 +161,17 @@ export default function AddWords() {
     setLoading(true);
     try {
       const res = await api.post("/words?action=validate", { words: parsed });
+      // backend returns shape: { ok: true/false, conflicts: { db:[], inBatch:[] } }
       const c: Conflicts = res.data?.conflicts ?? { db: [], inBatch: [] };
       if ((c && c.db && c.db.length) || (c && c.inBatch && c.inBatch.length)) {
-        // initialize replacements for all conflict keys (db + inBatch)
         const map: Record<string, string> = {};
         [...(c.db || []), ...(c.inBatch || [])].forEach((k) => (map[k] = ""));
         setReplacements(map);
         setConflicts(c);
         setMessage("Some words are duplicates — please replace them.");
       } else {
-        // no conflicts, submit directly
-        await submitFinal(parsed);
+        // no conflicts, submit directly (use buildFinal to ensure trimmed)
+        await submitFinal(buildFinal());
       }
     } catch (err: unknown) {
       const fallback = "Validation failed";
@@ -160,6 +195,24 @@ export default function AddWords() {
       setText("");
       setConflicts(null);
       setReplacements({});
+      // Call onAdded callback if provided
+      if (onAdded) {
+        await onAdded();
+      }
+      // refresh saved words list (for display)
+      try {
+        const res = await api.get("/words");
+        const docs: any[] = res.data ?? [];
+        const arr = docs.map((d) => ({
+          word: String(d.word || "").trim(),
+          wordLower: String(
+            d.wordLower || String(d.word || "").toLowerCase()
+          ).toLowerCase(),
+        }));
+        setSavedWords(arr);
+      } catch {
+        // ignore
+      }
     } catch (err: unknown) {
       // if server reports conflicts (race), show them
       if (
@@ -200,11 +253,23 @@ export default function AddWords() {
     await submitFinal(final);
   };
 
+  // helper: highlight DB duplicates from current user's saved list (display convenience)
+  const savedLowerSet = useMemo(
+    () => new Set(savedWords.map((s) => s.wordLower)),
+    [savedWords]
+  );
+  const isDbDuplicate = (wordLower: string) =>
+    savedLowerSet.has(wordLower) || conflicts?.db?.includes(wordLower);
+  const isInBatchDuplicate = (wordLower: string) =>
+    inBatchDupKeys.includes(wordLower) ||
+    conflicts?.inBatch?.includes(wordLower);
+
   return (
-    <div style={{ maxWidth: 800, margin: "12px auto", padding: 12 }}>
+    <div style={{ maxWidth: 900, margin: "12px auto", padding: 12 }}>
       <h3>Add exactly 10 words</h3>
 
       <textarea
+        aria-label="words-input"
         value={text}
         onChange={(e) => setText(e.target.value)}
         placeholder="Enter exactly 10 words separated by comma/newline/semicolon"
@@ -215,7 +280,11 @@ export default function AddWords() {
       <div
         style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}
       >
-        <button onClick={handleValidate} disabled={loading}>
+        <button
+          onClick={handleValidate}
+          disabled={loading || parsedCount !== 10}
+          aria-disabled={loading || parsedCount !== 10}
+        >
           Validate & Submit
         </button>
 
@@ -226,6 +295,7 @@ export default function AddWords() {
             setReplacements({});
             setMessage(null);
           }}
+          disabled={loading}
         >
           Clear
         </button>
@@ -239,14 +309,16 @@ export default function AddWords() {
         <div
           style={{
             marginTop: 10,
-            color: message.includes("success") ? "green" : "crimson",
+            color: message.toLowerCase().includes("success")
+              ? "green"
+              : "crimson",
           }}
         >
           {message}
         </div>
       )}
 
-      {/* Display parsed words with duplicate highlighting */}
+      {/* Parsed words visual */}
       {parsedCount > 0 && (
         <div style={{ marginTop: 12 }}>
           <div style={{ fontSize: 13, color: "#333", marginBottom: 8 }}>
@@ -300,7 +372,82 @@ export default function AddWords() {
         </div>
       )}
 
-      {/* If conflicts exist, show editor for each conflicting key */}
+      {/* Saved words table (current user only) */}
+      <div style={{ marginTop: 18 }}>
+        <div style={{ fontSize: 13, color: "#333", marginBottom: 8 }}>
+          Your saved words:
+        </div>
+        <div
+          style={{
+            border: "1px solid #e6e6e6",
+            padding: 8,
+            borderRadius: 6,
+            maxHeight: 240,
+            overflow: "auto",
+            background: "#fafafa",
+          }}
+        >
+          {savedLoading ? (
+            <div style={{ padding: 10 }}>Loading...</div>
+          ) : savedError ? (
+            <div style={{ padding: 10, color: "crimson" }}>{savedError}</div>
+          ) : savedWords.length === 0 ? (
+            <div style={{ padding: 10, color: "#666" }}>
+              No saved words yet.
+            </div>
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  <th
+                    style={{
+                      textAlign: "left",
+                      padding: "6px 8px",
+                      borderBottom: "1px solid #eee",
+                    }}
+                  >
+                    Word
+                  </th>
+                  <th
+                    style={{
+                      textAlign: "left",
+                      padding: "6px 8px",
+                      borderBottom: "1px solid #eee",
+                    }}
+                  >
+                    Lowercase
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {savedWords.map((s) => (
+                  <tr key={s.wordLower}>
+                    <td
+                      style={{
+                        padding: "6px 8px",
+                        borderBottom: "1px solid #f4f4f4",
+                      }}
+                    >
+                      {s.word}
+                    </td>
+                    <td
+                      style={{
+                        padding: "6px 8px",
+                        borderBottom: "1px solid #f4f4f4",
+                        color: "#666",
+                      }}
+                    >
+                      {s.wordLower}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+
+      {/* Conflicts editor */}
       {conflicts && (
         <div
           style={{
@@ -314,25 +461,34 @@ export default function AddWords() {
             Conflicting words — please replace
           </div>
 
-          {/* Show DB conflicts first */}
+          {/* DB conflicts */}
           {conflicts.db?.length ? (
             <div style={{ marginBottom: 10 }}>
               <div style={{ fontSize: 13, color: "#333", marginBottom: 6 }}>
-                Existing in your saved words:
+                Conflicts with existing words in the app:
               </div>
               {conflicts.db.map((key) => (
                 <div key={key} style={{ marginBottom: 8 }}>
                   <div style={{ fontSize: 13, color: "#444" }}>
                     {occurrenceMap.get(key)?.join(", ") ?? key}{" "}
-                    <span style={{ color: "#b22222" }}>(already saved)</span>
+                    <span style={{ color: "#b22222" }}>(already exists)</span>
                   </div>
                   <input
+                    aria-label={`replacement-${key}`}
                     placeholder="Replacement (required)"
                     value={replacements[key] ?? ""}
                     onChange={(e) =>
                       setReplacements((p) => ({ ...p, [key]: e.target.value }))
                     }
-                    style={{ width: "100%", padding: 8, marginTop: 6 }}
+                    style={{
+                      width: "100%",
+                      padding: 8,
+                      marginTop: 6,
+                      border:
+                        (replacements[key] ?? "").trim() === ""
+                          ? "1px solid #e57373"
+                          : "1px solid #ddd",
+                    }}
                   />
                 </div>
               ))}
@@ -352,12 +508,21 @@ export default function AddWords() {
                     <span style={{ color: "#b8860b" }}>(duplicate)</span>
                   </div>
                   <input
+                    aria-label={`replacement-batch-${key}`}
                     placeholder="Replacement (required)"
                     value={replacements[key] ?? ""}
                     onChange={(e) =>
                       setReplacements((p) => ({ ...p, [key]: e.target.value }))
                     }
-                    style={{ width: "100%", padding: 8, marginTop: 6 }}
+                    style={{
+                      width: "100%",
+                      padding: 8,
+                      marginTop: 6,
+                      border:
+                        (replacements[key] ?? "").trim() === ""
+                          ? "1px solid #e57373"
+                          : "1px solid #ddd",
+                    }}
                   />
                 </div>
               ))}

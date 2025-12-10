@@ -1,22 +1,18 @@
-// api/words.js
+// backend/api/words.js
 import dotenv from "dotenv";
 import path from "path";
-
-// load backend/.env reliably when running from repo root
 dotenv.config({ path: path.resolve(process.cwd(), "backend", ".env") });
 
 import cookie from "cookie";
 import jwt from "jsonwebtoken";
 
-// IMPORTANT: include the .js extension and correct relative path for ESM
-// Adjust these paths if your models/lib live elsewhere.
 import Word from "../models/Word.js";
 import { connectToDatabase } from "../lib/mongodb.js";
 
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) {
   console.error("Missing JWT_SECRET in environment (backend/.env).");
-  // continue — jwt.verify will throw later and we return 401
+  // We'll continue — jwt.verify will throw and the request will be unauthorized.
 }
 
 async function getUserFromReq(req) {
@@ -32,29 +28,36 @@ async function getUserFromReq(req) {
 }
 
 /**
- * Helper: normalize an incoming word to trimmed string and lower-case key
+ * normalizeList: given an array of arbitrary values, return
+ * - cleaned: trimmed non-empty strings (preserving original casing)
+ * - lowers: matching lower-cased strings (for comparisons)
  */
 function normalizeList(items = []) {
-  const cleaned = items
-    .map((s) => String(s || "").trim())
-    .filter((s) => s !== "");
-  // keep original-case strings for returns, but compute lower keys
+  const cleaned = Array.isArray(items)
+    ? items.map((s) => String(s || "").trim()).filter((s) => s !== "")
+    : [];
   const lowers = cleaned.map((s) => s.toLowerCase());
   return { cleaned, lowers };
 }
 
 /**
- * Build conflicts object shape:
- * { db: string[], inBatch: string[] }
+ * Helper to produce conflicts object expected by frontend
  */
 function conflictsObj(db = [], inBatch = []) {
   return {
-    db: db.map((s) => s.toLowerCase()),
-    inBatch: inBatch.map((s) => s.toLowerCase()),
+    db: Array.from(
+      new Set((db || []).map((s) => String(s).toLowerCase()).filter(Boolean))
+    ),
+    inBatch: Array.from(
+      new Set(
+        (inBatch || []).map((s) => String(s).toLowerCase()).filter(Boolean)
+      )
+    ),
   };
 }
 
 export default async function handler(req, res) {
+  // ensure DB connection
   try {
     await connectToDatabase();
   } catch (err) {
@@ -62,89 +65,110 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: "DB connection failed" });
   }
 
+  // attempt to create unique index on wordLower (global uniqueness)
+  // This is best-effort and will log an error if existing duplicates prevent index creation.
+  // If you already added the index in your schema or via migration, this will be no-op.
+  try {
+    // createIndex is idempotent if index exists.
+    // If duplicates exist, this will throw; we catch and log.
+    await Word.collection
+      .createIndex({ wordLower: 1 }, { unique: true })
+      .catch((e) => {
+        // Log but don't stop the handler because we can still function without the index (DB race still possible).
+        if (e && e.codeName === "IndexOptionsConflict") {
+          // harmless in many upgrade cases
+          console.warn(
+            "Index options conflict when creating wordLower unique index:",
+            e.message || e
+          );
+        } else {
+          // possible duplicate key conflict or other issue
+          console.warn(
+            "Could not create unique index on wordLower (you may need to dedupe existing docs):",
+            e.message || e
+          );
+        }
+      });
+  } catch (err) {
+    // swallow any unexpected error creating index; continue
+    console.warn(
+      "Index creation attempt failed (continuing):",
+      err && err.message ? err.message : err
+    );
+  }
+
   const user = await getUserFromReq(req);
   if (!user) return res.status(401).json({ error: "Missing token" });
 
-  // Only POST is used for validate/submit flows
   if (req.method === "POST") {
-    const action = String(req.query?.action ?? "").toLowerCase(); // "validate" or "submit" (or empty)
+    const action = String(req.query?.action ?? "").toLowerCase(); // "validate" or "submit"
     const items = Array.isArray(req.body?.words) ? req.body.words : [];
     const { cleaned, lowers } = normalizeList(items);
 
-    // Always require exactly 10 words for both validate and submit
+    // enforce exact 10 words
     if (cleaned.length !== 10) {
-      // return conflicts with inBatch if there are duplicates in provided list as well
-      // but primary error is length
       return res.status(400).json({
-        error: `Exactly 10 words required. You provided ${cleaned.length}.`,
+        error: `Exactly 10 words required. Received ${cleaned.length}.`,
+        conflicts: conflictsObj([], []),
       });
     }
 
-    // detect in-batch duplicates (lower-cased)
+    // detect in-batch duplicates
     const counts = new Map();
     lowers.forEach((l) => counts.set(l, (counts.get(l) || 0) + 1));
-    const inBatchDupKeys = Array.from(counts.entries())
+    const inBatch = Array.from(counts.entries())
       .filter(([, c]) => c > 1)
       .map(([k]) => k);
 
-    // Query DB for any existing wordLower for this user
-    let dbExisting = [];
+    // fetch ALL saved words (global) and build a lower-case set/array
+    let savedLower = [];
     try {
-      if (lowers.length > 0) {
-        // distinct to avoid duplicates in returned list
-        dbExisting = await Word.find(
-          { userId: user.id, wordLower: { $in: lowers } },
-          { wordLower: 1, _id: 0 }
+      // We ask only for the wordLower field to reduce payload
+      const savedDocs = await Word.find({}, { wordLower: 1 }).lean();
+      savedLower = Array.from(
+        new Set(
+          (savedDocs || [])
+            .map((d) =>
+              d && d.wordLower ? String(d.wordLower).toLowerCase() : ""
+            )
+            .filter(Boolean)
         )
-          .lean()
-          .then((docs) =>
-            (docs || []).map((d) => (d && d.wordLower ? d.wordLower : ""))
-          )
-          .then((arr) => Array.from(new Set(arr.filter(Boolean))));
-      }
+      );
     } catch (err) {
-      console.error("DB lookup failed:", err);
-      return res.status(500).json({ error: "DB lookup failed" });
+      console.error("DB fetch failed:", err);
+      return res.status(500).json({ error: "DB fetch failed" });
     }
 
-    // If user requested validation-only, return conflicts (if any) without inserting
-    if (action === "validate") {
-      const hasDb = Array.isArray(dbExisting) && dbExisting.length > 0;
-      const hasBatch = inBatchDupKeys.length > 0;
+    // compute dbMatches = submitted lowers that are present in global savedLower
+    const dbMatches = Array.from(
+      new Set(lowers.filter((l) => savedLower.includes(l)))
+    );
 
-      if (!hasDb && !hasBatch) {
+    // If validate action, just return conflicts (200 OK with conflicts)
+    if (action === "validate") {
+      if (dbMatches.length === 0 && inBatch.length === 0) {
         return res.json({
           ok: true,
           message: "No conflicts",
-          conflicts: { db: [], inBatch: [] },
+          conflicts: conflictsObj([], []),
         });
       }
-
-      return res.status(200).json({
+      return res.json({
         ok: false,
         message: "Conflicts found",
-        conflicts: conflictsObj(dbExisting, inBatchDupKeys),
+        conflicts: conflictsObj(dbMatches, inBatch),
       });
     }
 
-    // --- submit flow ---
-    // Re-check: do not allow in-batch duplicates on server
-    if (inBatchDupKeys.length > 0) {
-      return res.status(400).json({
-        error: "Duplicate words in submitted batch",
-        conflicts: conflictsObj([], inBatchDupKeys),
-      });
-    }
-
-    // Re-check DB: if any exist, return 409 with conflicts so frontend can ask for replacements
-    if (dbExisting.length > 0) {
+    // Submit workflow: disallow if any conflicts present (in-batch or db)
+    if (inBatch.length > 0 || dbMatches.length > 0) {
       return res.status(409).json({
-        error: "One or more words already exist",
-        conflicts: conflictsObj(dbExisting, []),
+        error: "Conflicts found. Fix duplicates before submitting.",
+        conflicts: conflictsObj(dbMatches, inBatch),
       });
     }
 
-    // Build docs and attempt insert
+    // Build docs and insert
     const docs = cleaned.map((w) => ({
       userId: user.id,
       word: w,
@@ -153,25 +177,28 @@ export default async function handler(req, res) {
     }));
 
     try {
-      // Use ordered:true so insert fails fast on a duplicate key (shouldn't happen because we checked),
-      // but we also handle duplicate key error by returning conflicts via a fresh DB query.
+      // ordered:true ensures we stop on first duplicate (should be none because we pre-checked)
       const inserted = await Word.insertMany(docs, { ordered: true });
       return res.json({ added: inserted.length });
     } catch (err) {
       console.error("Insert failed:", err);
 
-      // If duplicate key error occurs, try to produce a useful conflicts list
-      // Mongo duplicate key error code is 11000
-      if (err && err.code === 11000) {
-        // re-query which of the lowers now exist
+      // if duplicate key error occurs (race), return 409 with conflicts produced by re-querying DB
+      if (
+        err &&
+        (err.code === 11000 ||
+          (err.writeErrors && err.writeErrors.some((we) => we.code === 11000)))
+      ) {
         try {
-          const nowExisting = await Word.find(
-            { userId: user.id, wordLower: { $in: lowers } },
-            { wordLower: 1, _id: 0 }
-          )
-            .lean()
-            .then((docs) => (docs || []).map((d) => d.wordLower))
-            .then((arr) => Array.from(new Set(arr.filter(Boolean))));
+          const nowExistingDocs = await Word.find(
+            { wordLower: { $in: lowers } },
+            { wordLower: 1 }
+          ).lean();
+          const nowExisting = Array.from(
+            new Set(
+              (nowExistingDocs || []).map((d) => d.wordLower.toLowerCase())
+            )
+          );
           return res.status(409).json({
             error: "One or more words already exist (race condition)",
             conflicts: conflictsObj(nowExisting, []),
@@ -189,6 +216,7 @@ export default async function handler(req, res) {
     }
   }
 
+  // GET: same as before — list the current user's words (for frontend saved words table)
   if (req.method === "GET") {
     const { sort = "date-desc", from, to, q = "" } = req.query;
     const filter = { userId: user.id };

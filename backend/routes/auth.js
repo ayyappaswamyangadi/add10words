@@ -87,6 +87,7 @@ export default async function handler(req, res) {
       const cookies = req.headers.cookie
         ? cookie.parse(req.headers.cookie)
         : {};
+
       const token = cookies[COOKIE_NAME];
       if (!token) return res.status(200).json({ user: null });
       try {
