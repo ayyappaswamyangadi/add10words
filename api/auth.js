@@ -13,11 +13,11 @@ const COOKIE_NAME = "token";
 const COOKIE_MAX_AGE = 7 * 24 * 60 * 60; // seconds
 
 // Email config (set in environment)
-const SMTP_HOST = "smtp.gmail.com";
-const SMTP_PORT = 465;
-const SMTP_USER = "ayyappaswamy50@gmail.com";
-const SMTP_PASS = "yjtu gaww oiyi rckz";
-const FROM_EMAIL = process.env.FROM_EMAIL || "ayyappaswamy50@gmail.com";
+const SMTP_HOST = process.env.SMTP_HOST || "smtp.gmail.com";
+const SMTP_PORT = Number(process.env.SMTP_PORT || 465);
+const SMTP_USER = process.env.SMTP_USER;
+const SMTP_PASS = process.env.SMTP_PASS;
+const FROM_EMAIL = process.env.FROM_EMAIL || SMTP_USER;
 const FRONTEND_BASE =
   process.env.NEXT_PUBLIC_BASE_URL ||
   process.env.FRONTEND_BASE_URL ||
@@ -142,6 +142,7 @@ export default async function handler(req, res) {
     // ---------------------------
     // SIGNUP: create user but DO NOT sign in until verified
     // ---------------------------
+    // POST ?action=signup  (replace your existing signup block with this)
     if (method === "POST" && action === "signup") {
       const { email, password, name } = req.body || {};
       if (!email || !password || !name) {
@@ -150,43 +151,69 @@ export default async function handler(req, res) {
           .json({ error: "Name, email and password required" });
       }
 
-      const existing = await User.findOne({ email: email.toLowerCase() });
+      const lowerEmail = String(email).toLowerCase();
+
+      // 1) quick duplicate check
+      const existing = await User.findOne({ email: lowerEmail });
       if (existing) {
         return res.status(409).json({ error: "Email already registered" });
       }
 
-      const hash = await bcrypt.hash(password, 10);
+      // 2) prepare verification token and expiry (do NOT persist yet)
+      const verificationToken = crypto.randomBytes(24).toString("hex");
+      const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24h
 
-      // generate verification token (random hex) and expiry (24 hours)
-      const token = crypto.randomBytes(24).toString("hex");
-      const expires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
-
-      const user = await User.create({
-        name: String(name).trim(),
-        email: email.toLowerCase(),
-        passwordHash: hash,
-        isVerified: false,
-        verificationToken: token,
-        verificationExpires: expires,
-      });
-
-      // send verification email (best-effort)
+      // 3) Attempt to send verification email BEFORE creating the user in DB.
+      //    If sending fails, we do NOT create the user.
       try {
-        await sendVerificationEmail({ to: user.email, token, name: user.name });
+        await sendVerificationEmail({
+          to: lowerEmail,
+          token: verificationToken,
+          name: String(name).trim(),
+        });
       } catch (err) {
-        console.error("Failed to send verification email:", err);
-        // do not delete user — but inform frontend it couldn't send
+        console.error(
+          "Failed to send verification email (no user created):",
+          err
+        );
+        // Inform the client — do not create the user.
         return res
           .status(500)
           .json({ error: "Failed to send verification email" });
       }
 
-      // Signup success — instruct user to verify; do not set cookie yet
-      return res.json({
-        ok: true,
-        message:
-          "Signup successful. Please check your email to verify your account.",
-      });
+      // 4) Email sent successfully — now create the user record with token/expiry.
+      try {
+        const hash = await bcrypt.hash(password, 10);
+        const user = await User.create({
+          name: String(name).trim(),
+          email: lowerEmail,
+          passwordHash: hash,
+          isVerified: false,
+          verificationToken,
+          verificationExpires,
+        });
+
+        return res.json({
+          ok: true,
+          message:
+            "Signup successful. A verification email has been sent — please check your inbox.",
+        });
+      } catch (err) {
+        console.error(
+          "Failed to create user after successful email send:",
+          err
+        );
+        // If a race caused a duplicate between our initial check and create:
+        if (
+          err &&
+          (err.code === 11000 || (err.keyPattern && err.keyPattern.email))
+        ) {
+          return res.status(409).json({ error: "Email already registered" });
+        }
+        // Generic failure
+        return res.status(500).json({ error: "Signup failed" });
+      }
     }
 
     // ---------------------------

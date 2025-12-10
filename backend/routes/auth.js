@@ -13,11 +13,11 @@ const COOKIE_NAME = "token";
 const COOKIE_MAX_AGE = 7 * 24 * 60 * 60; // seconds
 
 // Email config (set in environment)
-const SMTP_HOST = "smtp.gmail.com";
-const SMTP_PORT = 465;
-const SMTP_USER = "ayyappaswamy50@gmail.com";
-const SMTP_PASS = "yjtu gaww oiyi rckz";
-const FROM_EMAIL = process.env.FROM_EMAIL || "ayyappaswamy50@gmail.com";
+const SMTP_HOST = process.env.SMTP_HOST || "smtp.gmail.com";
+const SMTP_PORT = Number(process.env.SMTP_PORT || 465);
+const SMTP_USER = process.env.SMTP_USER;
+const SMTP_PASS = process.env.SMTP_PASS;
+const FROM_EMAIL = process.env.FROM_EMAIL || SMTP_USER;
 const FRONTEND_BASE =
   process.env.NEXT_PUBLIC_BASE_URL ||
   process.env.FRONTEND_BASE_URL ||
@@ -142,6 +142,7 @@ export default async function handler(req, res) {
     // ---------------------------
     // SIGNUP: create user but DO NOT sign in until verified
     // ---------------------------
+    // SIGNUP: do NOT create a DB user yet — create a signed verification token instead
     if (method === "POST" && action === "signup") {
       const { email, password, name } = req.body || {};
       if (!email || !password || !name) {
@@ -150,42 +151,52 @@ export default async function handler(req, res) {
           .json({ error: "Name, email and password required" });
       }
 
-      const existing = await User.findOne({ email: email.toLowerCase() });
+      const lowerEmail = String(email).toLowerCase();
+
+      // quick duplicate check
+      const existing = await User.findOne({ email: lowerEmail });
       if (existing) {
         return res.status(409).json({ error: "Email already registered" });
       }
 
-      const hash = await bcrypt.hash(password, 10);
+      // Hash the password now (we will store the hash only when user verifies)
+      const passwordHash = await bcrypt.hash(password, 10);
 
-      // generate verification token (random hex) and expiry (24 hours)
-      const token = crypto.randomBytes(24).toString("hex");
-      const expires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
-
-      const user = await User.create({
+      // Build a signed verification token (contains email, name, passwordHash).
+      // The token is short-lived so it can't be reused later.
+      const verificationPayload = {
+        email: lowerEmail,
         name: String(name).trim(),
-        email: email.toLowerCase(),
-        passwordHash: hash,
-        isVerified: false,
-        verificationToken: token,
-        verificationExpires: expires,
+        passwordHash,
+      };
+
+      // TTL: 24h
+      const verificationToken = jwt.sign(verificationPayload, JWT_SECRET, {
+        expiresIn: "24h",
       });
 
-      // send verification email (best-effort)
+      // Attempt to send verification email BEFORE creating any DB record
       try {
-        await sendVerificationEmail({ to: user.email, token, name: user.name });
+        await sendVerificationEmail({
+          to: lowerEmail,
+          token: verificationToken,
+          name: verificationPayload.name,
+        });
       } catch (err) {
-        console.error("Failed to send verification email:", err);
-        // do not delete user — but inform frontend it couldn't send
+        console.error(
+          "Failed to send verification email (no user created):",
+          err
+        );
         return res
           .status(500)
           .json({ error: "Failed to send verification email" });
       }
 
-      // Signup success — instruct user to verify; do not set cookie yet
+      // Email sent successfully — tell client to check inbox
       return res.json({
         ok: true,
         message:
-          "Signup successful. Please check your email to verify your account.",
+          "Signup initiated. Check your email and click the verification link to complete registration.",
       });
     }
 
@@ -194,38 +205,115 @@ export default async function handler(req, res) {
     // GET /api/auth?action=verifyEmail&token=...
     // (used by frontend /verify-email page)
     // ---------------------------
+    // VERIFY: token contains email, name, passwordHash — create user now
     if (method === "GET" && action === "verifyEmail") {
       const token = String(req.query.token || "");
       if (!token) return res.status(400).json({ error: "Token required" });
 
-      // find user by token and not expired
-      const user = await User.findOne({
-        verificationToken: token,
-        verificationExpires: { $gt: new Date() },
-      });
-
-      if (!user) {
+      let payload;
+      try {
+        // Verify the signed verification token
+        payload = jwt.verify(token, JWT_SECRET);
+      } catch (err) {
+        // invalid or expired
         return res.status(400).json({ error: "Invalid or expired token" });
       }
 
-      user.isVerified = true;
-      user.verificationToken = null;
-      user.verificationExpires = null;
-      await user.save();
+      const {
+        email: tokenEmail,
+        name: tokenName,
+        passwordHash,
+      } = payload || {};
+      if (!tokenEmail || !passwordHash) {
+        return res.status(400).json({ error: "Invalid token payload" });
+      }
 
-      // sign JWT now that user is verified
-      const jwtToken = jwt.sign(
-        { sub: user._id.toString(), email: user.email, name: user.name },
-        JWT_SECRET,
-        { expiresIn: "7d" }
-      );
-      setTokenCookie(res, jwtToken);
+      const lowerEmail = String(tokenEmail).toLowerCase();
 
-      // return user object (frontend can redirect to dashboard)
-      return res.json({
-        ok: true,
-        user: { id: user._id.toString(), email: user.email, name: user.name },
-      });
+      // Re-check for an existing user (race condition: another actor may have created this email)
+      const existing = await User.findOne({ email: lowerEmail });
+      if (existing) {
+        // If user already exists and is verified, just sign them in.
+        if (existing.isVerified) {
+          const jwtToken = jwt.sign(
+            {
+              sub: existing._id.toString(),
+              email: existing.email,
+              name: existing.name,
+            },
+            JWT_SECRET,
+            { expiresIn: "7d" }
+          );
+          setTokenCookie(res, jwtToken);
+          return res.json({
+            ok: true,
+            user: {
+              id: existing._id.toString(),
+              email: existing.email,
+              name: existing.name,
+            },
+          });
+        }
+
+        // If a non-verified user exists (unlikely in this flow), mark verified
+        existing.isVerified = true;
+        await existing.save();
+
+        const jwtToken = jwt.sign(
+          {
+            sub: existing._id.toString(),
+            email: existing.email,
+            name: existing.name,
+          },
+          JWT_SECRET,
+          { expiresIn: "7d" }
+        );
+        setTokenCookie(res, jwtToken);
+        return res.json({
+          ok: true,
+          user: {
+            id: existing._id.toString(),
+            email: existing.email,
+            name: existing.name,
+          },
+        });
+      }
+
+      // Create the user now that token is valid and email was proven
+      try {
+        const user = await User.create({
+          name: tokenName || "",
+          email: lowerEmail,
+          passwordHash,
+          isVerified: true,
+          // verificationToken fields not used because we did not create user before
+          verificationToken: null,
+          verificationExpires: null,
+          createdAt: new Date(),
+        });
+
+        const jwtToken = jwt.sign(
+          { sub: user._id.toString(), email: user.email, name: user.name },
+          JWT_SECRET,
+          { expiresIn: "7d" }
+        );
+        setTokenCookie(res, jwtToken);
+
+        return res.json({
+          ok: true,
+          user: { id: user._id.toString(), email: user.email, name: user.name },
+        });
+      } catch (err) {
+        console.error("Failed to create user during verification:", err);
+        // Duplicate error if race at create time
+        if (
+          err &&
+          (err.code === 11000 || (err.keyPattern && err.keyPattern.email))
+        ) {
+          return res.status(409).json({ error: "Email already registered" });
+        }
+        return res.status(500).json({ error: "Failed to create user" });
+      }
     }
 
     // ---------------------------
