@@ -10,7 +10,8 @@ const wordSchema = new mongoose.Schema({
   notes: { type: String, default: "" },
 });
 
-wordSchema.index({ userId: 1, wordLower: 1 }, { unique: true });
+// GLOBAL uniqueness — no two documents may have the same wordLower.
+wordSchema.index({ wordLower: 1 }, { unique: true });
 
 const Word = mongoose.models?.Word || mongoose.model("Word", wordSchema);
 export default Word;

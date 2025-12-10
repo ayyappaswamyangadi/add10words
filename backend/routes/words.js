@@ -1,4 +1,4 @@
-// backend/api/words.js
+// backend/routes/words.js
 import dotenv from "dotenv";
 import path from "path";
 dotenv.config({ path: path.resolve(process.cwd(), "backend", ".env") });
@@ -7,12 +7,32 @@ import cookie from "cookie";
 import jwt from "jsonwebtoken";
 
 import Word from "../models/Word.js";
+import User from "../models/User.js"; // <--- owner lookup
 import { connectToDatabase } from "../lib/mongodb.js";
 
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) {
   console.error("Missing JWT_SECRET in environment (backend/.env).");
-  // We'll continue — jwt.verify will throw and the request will be unauthorized.
+  // jwt.verify will throw if secret missing — requests will be unauthorized.
+}
+
+/**
+ * Module-level flag to avoid re-running index creation on every invocation
+ * (important for serverless environments like Vercel).
+ */
+let indexEnsured = false;
+async function ensureWordLowerIndexOnce() {
+  if (indexEnsured) return;
+  try {
+    await Word.collection.createIndex({ wordLower: 1 }, { unique: true });
+    indexEnsured = true;
+  } catch (e) {
+    console.warn(
+      "Could not create unique index on wordLower (continuing):",
+      e && e.message ? e.message : e
+    );
+    // don't set indexEnsured true so we may try again on next cold start
+  }
 }
 
 async function getUserFromReq(req) {
@@ -21,17 +41,12 @@ async function getUserFromReq(req) {
   if (!token) return null;
   try {
     const payload = jwt.verify(token, JWT_SECRET);
-    return { id: payload.sub, email: payload.email };
+    return { id: payload.sub, email: payload.email, name: payload.name };
   } catch (e) {
     return null;
   }
 }
 
-/**
- * normalizeList: given an array of arbitrary values, return
- * - cleaned: trimmed non-empty strings (preserving original casing)
- * - lowers: matching lower-cased strings (for comparisons)
- */
 function normalizeList(items = []) {
   const cleaned = Array.isArray(items)
     ? items.map((s) => String(s || "").trim()).filter((s) => s !== "")
@@ -40,9 +55,6 @@ function normalizeList(items = []) {
   return { cleaned, lowers };
 }
 
-/**
- * Helper to produce conflicts object expected by frontend
- */
 function conflictsObj(db = [], inBatch = []) {
   return {
     db: Array.from(
@@ -56,8 +68,18 @@ function conflictsObj(db = [], inBatch = []) {
   };
 }
 
+function normalizeDocs(docs = []) {
+  return (docs || []).map((d) => ({
+    _id: String(d._id),
+    word: d.word,
+    wordLower: d.wordLower,
+    userId: d.userId ? String(d.userId) : undefined,
+    addedAt: d.addedAt ? new Date(d.addedAt).toISOString() : null,
+  }));
+}
+
 export default async function handler(req, res) {
-  // ensure DB connection
+  // ensure DB
   try {
     await connectToDatabase();
   } catch (err) {
@@ -65,47 +87,18 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: "DB connection failed" });
   }
 
-  // attempt to create unique index on wordLower (global uniqueness)
-  // This is best-effort and will log an error if existing duplicates prevent index creation.
-  // If you already added the index in your schema or via migration, this will be no-op.
-  try {
-    // createIndex is idempotent if index exists.
-    // If duplicates exist, this will throw; we catch and log.
-    await Word.collection
-      .createIndex({ wordLower: 1 }, { unique: true })
-      .catch((e) => {
-        // Log but don't stop the handler because we can still function without the index (DB race still possible).
-        if (e && e.codeName === "IndexOptionsConflict") {
-          // harmless in many upgrade cases
-          console.warn(
-            "Index options conflict when creating wordLower unique index:",
-            e.message || e
-          );
-        } else {
-          // possible duplicate key conflict or other issue
-          console.warn(
-            "Could not create unique index on wordLower (you may need to dedupe existing docs):",
-            e.message || e
-          );
-        }
-      });
-  } catch (err) {
-    // swallow any unexpected error creating index; continue
-    console.warn(
-      "Index creation attempt failed (continuing):",
-      err && err.message ? err.message : err
-    );
-  }
+  // ensure index once per cold start
+  ensureWordLowerIndexOnce().catch(() => {});
 
   const user = await getUserFromReq(req);
   if (!user) return res.status(401).json({ error: "Missing token" });
 
+  // POST: validate or submit
   if (req.method === "POST") {
-    const action = String(req.query?.action ?? "").toLowerCase(); // "validate" or "submit"
+    const action = String(req.query?.action ?? "").toLowerCase();
     const items = Array.isArray(req.body?.words) ? req.body.words : [];
     const { cleaned, lowers } = normalizeList(items);
 
-    // enforce exact 10 words
     if (cleaned.length !== 10) {
       return res.status(400).json({
         error: `Exactly 10 words required. Received ${cleaned.length}.`,
@@ -113,40 +106,32 @@ export default async function handler(req, res) {
       });
     }
 
-    // detect in-batch duplicates
+    // in-batch duplicates
     const counts = new Map();
     lowers.forEach((l) => counts.set(l, (counts.get(l) || 0) + 1));
     const inBatch = Array.from(counts.entries())
       .filter(([, c]) => c > 1)
       .map(([k]) => k);
 
-    // fetch ALL saved words (global) and build a lower-case set/array
-    let savedLower = [];
+    // query DB for existing matches
+    let existingLower = [];
     try {
-      // We ask only for the wordLower field to reduce payload
-      const savedDocs = await Word.find({}, { wordLower: 1 }).lean();
-      savedLower = Array.from(
-        new Set(
-          (savedDocs || [])
-            .map((d) =>
-              d && d.wordLower ? String(d.wordLower).toLowerCase() : ""
-            )
-            .filter(Boolean)
-        )
-      );
+      if (lowers.length > 0) {
+        const found = await Word.find(
+          { wordLower: { $in: lowers } },
+          { wordLower: 1 }
+        ).lean();
+        existingLower = Array.from(
+          new Set((found || []).map((d) => String(d.wordLower).toLowerCase()))
+        );
+      }
     } catch (err) {
       console.error("DB fetch failed:", err);
       return res.status(500).json({ error: "DB fetch failed" });
     }
 
-    // compute dbMatches = submitted lowers that are present in global savedLower
-    const dbMatches = Array.from(
-      new Set(lowers.filter((l) => savedLower.includes(l)))
-    );
-
-    // If validate action, just return conflicts (200 OK with conflicts)
     if (action === "validate") {
-      if (dbMatches.length === 0 && inBatch.length === 0) {
+      if (existingLower.length === 0 && inBatch.length === 0) {
         return res.json({
           ok: true,
           message: "No conflicts",
@@ -156,19 +141,17 @@ export default async function handler(req, res) {
       return res.json({
         ok: false,
         message: "Conflicts found",
-        conflicts: conflictsObj(dbMatches, inBatch),
+        conflicts: conflictsObj(existingLower, inBatch),
       });
     }
 
-    // Submit workflow: disallow if any conflicts present (in-batch or db)
-    if (inBatch.length > 0 || dbMatches.length > 0) {
+    if (inBatch.length > 0 || existingLower.length > 0) {
       return res.status(409).json({
         error: "Conflicts found. Fix duplicates before submitting.",
-        conflicts: conflictsObj(dbMatches, inBatch),
+        conflicts: conflictsObj(existingLower, inBatch),
       });
     }
 
-    // Build docs and insert
     const docs = cleaned.map((w) => ({
       userId: user.id,
       word: w,
@@ -177,18 +160,15 @@ export default async function handler(req, res) {
     }));
 
     try {
-      // ordered:true ensures we stop on first duplicate (should be none because we pre-checked)
       const inserted = await Word.insertMany(docs, { ordered: true });
       return res.json({ added: inserted.length });
     } catch (err) {
       console.error("Insert failed:", err);
-
-      // if duplicate key error occurs (race), return 409 with conflicts produced by re-querying DB
-      if (
+      const dupKey =
         err &&
         (err.code === 11000 ||
-          (err.writeErrors && err.writeErrors.some((we) => we.code === 11000)))
-      ) {
+          (err.writeErrors && err.writeErrors.some((we) => we.code === 11000)));
+      if (dupKey) {
         try {
           const nowExistingDocs = await Word.find(
             { wordLower: { $in: lowers } },
@@ -196,7 +176,9 @@ export default async function handler(req, res) {
           ).lean();
           const nowExisting = Array.from(
             new Set(
-              (nowExistingDocs || []).map((d) => d.wordLower.toLowerCase())
+              (nowExistingDocs || []).map((d) =>
+                String(d.wordLower || "").toLowerCase()
+              )
             )
           );
           return res.status(409).json({
@@ -211,27 +193,80 @@ export default async function handler(req, res) {
           return res.status(500).json({ error: "Insert failed (duplicate)" });
         }
       }
-
       return res.status(500).json({ error: "Insert failed" });
     }
   }
 
-  // GET: same as before — list the current user's words (for frontend saved words table)
+  // GET: return mine and all (with ownerName)
   if (req.method === "GET") {
     const { sort = "date-desc", from, to, q = "" } = req.query;
-    const filter = { userId: user.id };
-    if (from) filter.addedAt = { ...filter.addedAt, $gte: new Date(from) };
+
+    const mineFilter = { userId: user.id };
+    if (from)
+      mineFilter.addedAt = { ...mineFilter.addedAt, $gte: new Date(from) };
     if (to)
-      filter.addedAt = { ...filter.addedAt, $lte: new Date(to + "T23:59:59") };
-    if (q) filter.wordLower = { $regex: q.toLowerCase(), $options: "i" };
+      mineFilter.addedAt = {
+        ...mineFilter.addedAt,
+        $lte: new Date(String(to) + "T23:59:59"),
+      };
+    if (q)
+      mineFilter.wordLower = { $regex: String(q).toLowerCase(), $options: "i" };
+
+    const globalFilter = {};
+    if (q)
+      globalFilter.wordLower = {
+        $regex: String(q).toLowerCase(),
+        $options: "i",
+      };
+
     let sortSpec = { addedAt: -1 };
     if (sort === "date-asc") sortSpec = { addedAt: 1 };
     if (sort === "alpha-asc") sortSpec = { wordLower: 1 };
     if (sort === "alpha-desc") sortSpec = { wordLower: -1 };
 
     try {
-      const docs = await Word.find(filter).sort(sortSpec).limit(2000).lean();
-      return res.json(docs);
+      const [mineDocs, allDocs] = await Promise.all([
+        Word.find(mineFilter).sort(sortSpec).limit(2000).lean(),
+        Word.find(globalFilter).sort(sortSpec).limit(5000).lean(),
+      ]);
+
+      // Build owner map
+      const userIds = Array.from(
+        new Set(
+          (allDocs || []).map((w) => String(w.userId || "")).filter(Boolean)
+        )
+      );
+      let ownerMap = {};
+      if (userIds.length > 0) {
+        const owners = await User.find(
+          { _id: { $in: userIds } },
+          { name: 1, email: 1 }
+        ).lean();
+        ownerMap = Object.fromEntries(
+          owners.map((u) => {
+            const displayName =
+              u.name && u.name.trim() !== "" ? u.name : u.email;
+            return [String(u._id), displayName];
+          })
+        );
+      }
+
+      const attachOwner = (docs) =>
+        (docs || []).map((d) => ({
+          _id: String(d._id),
+          word: d.word,
+          wordLower: d.wordLower,
+          userId: d.userId ? String(d.userId) : undefined,
+          addedAt: d.addedAt ? new Date(d.addedAt).toISOString() : null,
+          ownerName: d.userId
+            ? ownerMap[String(d.userId)] || "Unknown"
+            : "Unknown",
+        }));
+
+      const mine = attachOwner(mineDocs);
+      const all = attachOwner(allDocs);
+
+      return res.json({ mine, all });
     } catch (err) {
       console.error("Failed to fetch words:", err);
       return res.status(500).json({ error: "Fetch failed" });

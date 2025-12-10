@@ -8,6 +8,7 @@ import Dashboard from "./components/Dashboard";
 import ProtectedRoute from "./auth/ProtectedRoute";
 //css
 import "./styles.css";
+import VerifyEmailPage from "./components/VerifyEmail";
 
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
@@ -16,6 +17,7 @@ createRoot(document.getElementById("root")!).render(
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
+          <Route path="/verify-email" element={<VerifyEmailPage />} />
           <Route
             path="/home"
             element={

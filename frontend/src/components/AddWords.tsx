@@ -49,7 +49,7 @@ export default function AddWords({ onAdded }: AddWordsProps = {}) {
       .split(/[\n,;]+/)
       .map(normalize)
       .filter(Boolean)
-      .slice(0, 100); // defensive
+      .slice(0, 100); // defensive cap
   }, [text]);
 
   // mapping from lower -> list of original occurrences (for display)
@@ -108,7 +108,16 @@ export default function AddWords({ onAdded }: AddWordsProps = {}) {
       setSavedError(null);
       try {
         const res = await api.get("/words");
-        const docs: any[] = res.data ?? [];
+        // backend may return either: Array<wordDocs> OR { all: [...], mine: [...] }
+        const data = res.data;
+        let docs: any[] = [];
+        if (Array.isArray(data)) {
+          docs = data;
+        } else if (data && Array.isArray(data.mine)) {
+          docs = data.mine;
+        } else {
+          docs = [];
+        }
         if (cancelled) return;
         const arr = docs.map((d) => ({
           word: String(d.word || "").trim(),
@@ -130,7 +139,7 @@ export default function AddWords({ onAdded }: AddWordsProps = {}) {
     return () => {
       cancelled = true;
     };
-  }, [api]);
+  }, []);
 
   // helper to initialize replacement map from list of lowercase keys
   const initReplacementsFromList = (keys: string[]) => {
@@ -165,9 +174,16 @@ export default function AddWords({ onAdded }: AddWordsProps = {}) {
       const c: Conflicts = res.data?.conflicts ?? { db: [], inBatch: [] };
       if ((c && c.db && c.db.length) || (c && c.inBatch && c.inBatch.length)) {
         const map: Record<string, string> = {};
-        [...(c.db || []), ...(c.inBatch || [])].forEach((k) => (map[k] = ""));
+        [...(c.db || []), ...(c.inBatch || [])].forEach((k) =>
+          map[k.toLowerCase()] === undefined
+            ? (map[k.toLowerCase()] = "")
+            : null
+        );
         setReplacements(map);
-        setConflicts(c);
+        setConflicts({
+          db: (c.db || []).map((s) => s.toLowerCase()),
+          inBatch: (c.inBatch || []).map((s) => s.toLowerCase()),
+        });
         setMessage("Some words are duplicates — please replace them.");
       } else {
         // no conflicts, submit directly (use buildFinal to ensure trimmed)
@@ -185,12 +201,12 @@ export default function AddWords({ onAdded }: AddWordsProps = {}) {
     }
   };
 
-  // submit final words to backend (action=submit)
+  // submit final words to backend (action=submit is implicit — POST /words)
   const submitFinal = async (finalWords: string[]) => {
     setLoading(true);
     setMessage(null);
     try {
-      await api.post("/words?action=submit", { words: finalWords });
+      await api.post("/words", { words: finalWords });
       setMessage("Words added successfully!");
       setText("");
       setConflicts(null);
@@ -202,7 +218,15 @@ export default function AddWords({ onAdded }: AddWordsProps = {}) {
       // refresh saved words list (for display)
       try {
         const res = await api.get("/words");
-        const docs: any[] = res.data ?? [];
+        const data = res.data;
+        let docs: any[] = [];
+        if (Array.isArray(data)) {
+          docs = data;
+        } else if (data && Array.isArray(data.mine)) {
+          docs = data.mine;
+        } else {
+          docs = [];
+        }
         const arr = docs.map((d) => ({
           word: String(d.word || "").trim(),
           wordLower: String(
@@ -211,7 +235,7 @@ export default function AddWords({ onAdded }: AddWordsProps = {}) {
         }));
         setSavedWords(arr);
       } catch {
-        // ignore
+        // ignore refresh errors
       }
     } catch (err: unknown) {
       // if server reports conflicts (race), show them
@@ -220,12 +244,14 @@ export default function AddWords({ onAdded }: AddWordsProps = {}) {
         err.response?.status === 409 &&
         err.response?.data?.conflicts
       ) {
-        setConflicts(err.response.data.conflicts);
+        const serverConflicts = err.response.data.conflicts;
+        const dbList = (serverConflicts.db || []).map((s) => s.toLowerCase());
+        const batchList = (serverConflicts.inBatch || []).map((s) =>
+          s.toLowerCase()
+        );
+        setConflicts({ db: dbList, inBatch: batchList });
         const map: Record<string, string> = {};
-        [
-          ...(err.response.data.conflicts.db || []),
-          ...(err.response.data.conflicts.inBatch || []),
-        ].forEach((k: string) => (map[k] = ""));
+        [...dbList, ...batchList].forEach((k) => (map[k] = ""));
         setReplacements(map);
         setMessage(
           "Conflicts detected on submit — please replace highlighted words."
@@ -285,7 +311,7 @@ export default function AddWords({ onAdded }: AddWordsProps = {}) {
           disabled={loading || parsedCount !== 10}
           aria-disabled={loading || parsedCount !== 10}
         >
-          Validate & Submit
+          {loading ? "Working..." : "Validate & Submit"}
         </button>
 
         <button
@@ -467,31 +493,37 @@ export default function AddWords({ onAdded }: AddWordsProps = {}) {
               <div style={{ fontSize: 13, color: "#333", marginBottom: 6 }}>
                 Conflicts with existing words in the app:
               </div>
-              {conflicts.db.map((key) => (
-                <div key={key} style={{ marginBottom: 8 }}>
-                  <div style={{ fontSize: 13, color: "#444" }}>
-                    {occurrenceMap.get(key)?.join(", ") ?? key}{" "}
-                    <span style={{ color: "#b22222" }}>(already exists)</span>
+              {conflicts.db.map((key) => {
+                const lowerKey = key.toLowerCase();
+                return (
+                  <div key={lowerKey} style={{ marginBottom: 8 }}>
+                    <div style={{ fontSize: 13, color: "#444" }}>
+                      {occurrenceMap.get(lowerKey)?.join(", ") ?? key}{" "}
+                      <span style={{ color: "#b22222" }}>(already exists)</span>
+                    </div>
+                    <input
+                      aria-label={`replacement-${lowerKey}`}
+                      placeholder="Replacement (required)"
+                      value={replacements[lowerKey] ?? ""}
+                      onChange={(e) =>
+                        setReplacements((p) => ({
+                          ...p,
+                          [lowerKey]: e.target.value,
+                        }))
+                      }
+                      style={{
+                        width: "100%",
+                        padding: 8,
+                        marginTop: 6,
+                        border:
+                          (replacements[lowerKey] ?? "").trim() === ""
+                            ? "1px solid #e57373"
+                            : "1px solid #ddd",
+                      }}
+                    />
                   </div>
-                  <input
-                    aria-label={`replacement-${key}`}
-                    placeholder="Replacement (required)"
-                    value={replacements[key] ?? ""}
-                    onChange={(e) =>
-                      setReplacements((p) => ({ ...p, [key]: e.target.value }))
-                    }
-                    style={{
-                      width: "100%",
-                      padding: 8,
-                      marginTop: 6,
-                      border:
-                        (replacements[key] ?? "").trim() === ""
-                          ? "1px solid #e57373"
-                          : "1px solid #ddd",
-                    }}
-                  />
-                </div>
-              ))}
+                );
+              })}
             </div>
           ) : null}
 
@@ -501,31 +533,37 @@ export default function AddWords({ onAdded }: AddWordsProps = {}) {
               <div style={{ fontSize: 13, color: "#333", marginBottom: 6 }}>
                 Duplicates inside your list:
               </div>
-              {conflicts.inBatch.map((key) => (
-                <div key={key} style={{ marginBottom: 8 }}>
-                  <div style={{ fontSize: 13, color: "#444" }}>
-                    {occurrenceMap.get(key)?.join(", ") ?? key}{" "}
-                    <span style={{ color: "#b8860b" }}>(duplicate)</span>
+              {conflicts.inBatch.map((key) => {
+                const lowerKey = key.toLowerCase();
+                return (
+                  <div key={lowerKey} style={{ marginBottom: 8 }}>
+                    <div style={{ fontSize: 13, color: "#444" }}>
+                      {occurrenceMap.get(lowerKey)?.join(", ") ?? key}{" "}
+                      <span style={{ color: "#b8860b" }}>(duplicate)</span>
+                    </div>
+                    <input
+                      aria-label={`replacement-batch-${lowerKey}`}
+                      placeholder="Replacement (required)"
+                      value={replacements[lowerKey] ?? ""}
+                      onChange={(e) =>
+                        setReplacements((p) => ({
+                          ...p,
+                          [lowerKey]: e.target.value,
+                        }))
+                      }
+                      style={{
+                        width: "100%",
+                        padding: 8,
+                        marginTop: 6,
+                        border:
+                          (replacements[lowerKey] ?? "").trim() === ""
+                            ? "1px solid #e57373"
+                            : "1px solid #ddd",
+                      }}
+                    />
                   </div>
-                  <input
-                    aria-label={`replacement-batch-${key}`}
-                    placeholder="Replacement (required)"
-                    value={replacements[key] ?? ""}
-                    onChange={(e) =>
-                      setReplacements((p) => ({ ...p, [key]: e.target.value }))
-                    }
-                    style={{
-                      width: "100%",
-                      padding: 8,
-                      marginTop: 6,
-                      border:
-                        (replacements[key] ?? "").trim() === ""
-                          ? "1px solid #e57373"
-                          : "1px solid #ddd",
-                    }}
-                  />
-                </div>
-              ))}
+                );
+              })}
             </div>
           ) : null}
 
@@ -534,7 +572,7 @@ export default function AddWords({ onAdded }: AddWordsProps = {}) {
               onClick={handleSubmitReplacements}
               disabled={!isFinalValid() || loading}
             >
-              Submit replacements
+              {loading ? "Working..." : "Submit replacements"}
             </button>
             <button
               onClick={() => {

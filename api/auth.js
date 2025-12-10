@@ -2,15 +2,37 @@
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import cookie from "cookie";
-import User from "../backend/models/User.js";
-import { connectToDatabase } from "../backend/lib/mongodb.js";
+import crypto from "crypto";
+import nodemailer from "nodemailer";
+
+import User from "../models/User.js";
+import { connectToDatabase } from "../lib/mongodb.js";
 
 const JWT_SECRET = process.env.JWT_SECRET;
 const COOKIE_NAME = "token";
 const COOKIE_MAX_AGE = 7 * 24 * 60 * 60; // seconds
 
+// Email config (set in environment)
+const SMTP_HOST = "smtp.gmail.com";
+const SMTP_PORT = 465;
+const SMTP_USER = "ayyappaswamy50@gmail.com";
+const SMTP_PASS = "yjtu gaww oiyi rckz";
+const FROM_EMAIL = process.env.FROM_EMAIL || "ayyappaswamy50@gmail.com";
+const FRONTEND_BASE =
+  process.env.NEXT_PUBLIC_BASE_URL ||
+  process.env.FRONTEND_BASE_URL ||
+  "http://localhost:5173";
+
+if (!JWT_SECRET) {
+  console.warn("JWT_SECRET not set — tokens will not be valid.");
+}
+
+if (!JWT_SECRET) {
+  console.warn("JWT_SECRET not set — tokens will not be valid.");
+}
+
+/* helper to set cookie */
 function setTokenCookie(res, token) {
-  // Vercel serverless response uses standard node res
   const isProd = process.env.NODE_ENV === "production";
   res.setHeader(
     "Set-Cookie",
@@ -37,52 +59,210 @@ function clearTokenCookie(res) {
   );
 }
 
-// Export default for Vercel (handler)
+/* Nodemailer transport helper — change to your provider if needed */
+function createTransport() {
+  if (!SMTP_HOST || !SMTP_PORT || !SMTP_USER || !SMTP_PASS) {
+    console.warn(
+      "SMTP not fully configured. Set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS in env."
+    );
+    return null;
+  }
+  return nodemailer.createTransport({
+    host: SMTP_HOST,
+    port: SMTP_PORT,
+    secure: SMTP_PORT === 465, // true for 465 (SSL), false for 587 (STARTTLS)
+    auth: {
+      user: SMTP_USER,
+      pass: SMTP_PASS,
+    },
+  });
+}
+
+/* send verification link to user */
+async function sendVerificationEmail({ to, token, name }) {
+  const transport = createTransport();
+  if (!transport) {
+    console.warn(
+      "Skipping sending verification email because transport is not configured."
+    );
+    return;
+  }
+
+  // Build verification link pointing to frontend verify page
+  const verifyUrl = FRONTEND_BASE
+    ? `${FRONTEND_BASE.replace(
+        /\/+$/,
+        ""
+      )}/verify-email?token=${encodeURIComponent(token)}`
+    : `/verify-email?token=${encodeURIComponent(token)}`;
+
+  const displayName = name || to;
+
+  const mail = {
+    from: FROM_EMAIL,
+    to,
+    subject: "Verify your email",
+    text:
+      `Hello ${displayName},\n\n` +
+      `Please verify your email by clicking the link below:\n\n` +
+      `${verifyUrl}\n\n` +
+      `If you did not sign up, you can ignore this message.\n\n` +
+      `Thanks,\n` +
+      `The Team`,
+    html:
+      `<p>Hello ${displayName},</p>` +
+      `<p>Please verify your email by clicking the link below:</p>` +
+      `<p><a href="${verifyUrl}">Verify email</a></p>` +
+      `<p>If you did not sign up, you can ignore this message.</p>` +
+      `<p>Thanks,<br/>The Team</p>`,
+  };
+
+  await transport.sendMail(mail);
+}
+
+/* parse user cookie to return basic user object */
+function getUserFromReq(req) {
+  const cookies = req.headers.cookie ? cookie.parse(req.headers.cookie) : {};
+  const token = cookies[COOKIE_NAME];
+  if (!token) return null;
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    return { id: payload.sub, email: payload.email, name: payload.name };
+  } catch (e) {
+    return null;
+  }
+}
+
 export default async function handler(req, res) {
   await connectToDatabase();
   const { method } = req;
-  // route by method + path (query.action optional)
-  const action = req.query.action || "";
+  const action = String(req.query.action || "");
 
   try {
+    // ---------------------------
+    // SIGNUP: create user but DO NOT sign in until verified
+    // ---------------------------
     if (method === "POST" && action === "signup") {
-      const { email, password } = req.body || {};
-      if (!email || !password)
-        return res.status(400).json({ error: "Email and password required" });
+      const { email, password, name } = req.body || {};
+      if (!email || !password || !name) {
+        return res
+          .status(400)
+          .json({ error: "Name, email and password required" });
+      }
+
       const existing = await User.findOne({ email: email.toLowerCase() });
-      if (existing)
+      if (existing) {
         return res.status(409).json({ error: "Email already registered" });
+      }
+
       const hash = await bcrypt.hash(password, 10);
+
+      // generate verification token (random hex) and expiry (24 hours)
+      const token = crypto.randomBytes(24).toString("hex");
+      const expires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+
       const user = await User.create({
+        name: String(name).trim(),
         email: email.toLowerCase(),
         passwordHash: hash,
+        isVerified: false,
+        verificationToken: token,
+        verificationExpires: expires,
       });
-      const token = jwt.sign(
-        { sub: user._id.toString(), email: user.email },
+
+      // send verification email (best-effort)
+      try {
+        await sendVerificationEmail({ to: user.email, token, name: user.name });
+      } catch (err) {
+        console.error("Failed to send verification email:", err);
+        // do not delete user — but inform frontend it couldn't send
+        return res
+          .status(500)
+          .json({ error: "Failed to send verification email" });
+      }
+
+      // Signup success — instruct user to verify; do not set cookie yet
+      return res.json({
+        ok: true,
+        message:
+          "Signup successful. Please check your email to verify your account.",
+      });
+    }
+
+    // ---------------------------
+    // EMAIL VERIFICATION endpoint
+    // GET /api/auth?action=verifyEmail&token=...
+    // (used by frontend /verify-email page)
+    // ---------------------------
+    if (method === "GET" && action === "verifyEmail") {
+      const token = String(req.query.token || "");
+      if (!token) return res.status(400).json({ error: "Token required" });
+
+      // find user by token and not expired
+      const user = await User.findOne({
+        verificationToken: token,
+        verificationExpires: { $gt: new Date() },
+      });
+
+      if (!user) {
+        return res.status(400).json({ error: "Invalid or expired token" });
+      }
+
+      user.isVerified = true;
+      user.verificationToken = null;
+      user.verificationExpires = null;
+      await user.save();
+
+      // sign JWT now that user is verified
+      const jwtToken = jwt.sign(
+        { sub: user._id.toString(), email: user.email, name: user.name },
         JWT_SECRET,
         { expiresIn: "7d" }
       );
-      setTokenCookie(res, token);
-      return res.json({ user: { id: user._id.toString(), email: user.email } });
+      setTokenCookie(res, jwtToken);
+
+      // return user object (frontend can redirect to dashboard)
+      return res.json({
+        ok: true,
+        user: { id: user._id.toString(), email: user.email, name: user.name },
+      });
     }
 
+    // ---------------------------
+    // LOGIN: block if not verified
+    // ---------------------------
     if (method === "POST" && action === "login") {
       const { email, password } = req.body || {};
       if (!email || !password)
         return res.status(400).json({ error: "Email and password required" });
+
       const user = await User.findOne({ email: email.toLowerCase() });
       if (!user) return res.status(401).json({ error: "Invalid credentials" });
+
+      if (!user.isVerified) {
+        return res
+          .status(403)
+          .json({ error: "Email not verified. Please check your inbox." });
+      }
+
       const ok = await bcrypt.compare(password, user.passwordHash);
       if (!ok) return res.status(401).json({ error: "Invalid credentials" });
+
       const token = jwt.sign(
-        { sub: user._id.toString(), email: user.email },
+        { sub: user._id.toString(), email: user.email, name: user.name },
         JWT_SECRET,
         { expiresIn: "7d" }
       );
+
       setTokenCookie(res, token);
-      return res.json({ user: { id: user._id.toString(), email: user.email } });
+      return res.json({
+        user: { id: user._id.toString(), email: user.email, name: user.name },
+      });
     }
 
+    // ---------------------------
+    // ME: return user info (including isVerified)
+    // ---------------------------
     if (method === "GET" && action === "me") {
       const cookies = req.headers.cookie
         ? cookie.parse(req.headers.cookie)
@@ -91,13 +271,27 @@ export default async function handler(req, res) {
       if (!token) return res.status(200).json({ user: null });
       try {
         const payload = jwt.verify(token, JWT_SECRET);
-        return res.json({ user: { id: payload.sub, email: payload.email } });
+        // Add isVerified by reading DB (optional)
+        const dbUser = await User.findById(payload.sub).lean();
+        return res.json({
+          user: dbUser
+            ? {
+                id: String(dbUser._id),
+                email: dbUser.email,
+                name: dbUser.name,
+                isVerified: !!dbUser.isVerified,
+              }
+            : null,
+        });
       } catch (e) {
         clearTokenCookie(res);
         return res.status(200).json({ user: null });
       }
     }
 
+    // ---------------------------
+    // LOGOUT
+    // ---------------------------
     if (method === "POST" && action === "logout") {
       clearTokenCookie(res);
       return res.json({ ok: true });
