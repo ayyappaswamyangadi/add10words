@@ -14,3 +14,4 @@ export default function ProtectedRoute({ children }: { children: ReactNode }) {
   // User authenticated → allow page
   return children;
 }
+// "rewrites": [{ "source": "/(.*)", "destination": "/" }],
