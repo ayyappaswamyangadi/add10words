@@ -33,12 +33,12 @@ if (!JWT_SECRET) {
 
 /* helper to set cookie */
 function setTokenCookie(res, token) {
-  const isProd = process.env.NODE_ENV === "production";
+  // const isProd = process.env.NODE_ENV === "production";
   res.setHeader(
     "Set-Cookie",
     cookie.serialize(COOKIE_NAME, token, {
       httpOnly: true,
-      secure: isProd,
+      // secure: isProd,
       sameSite: "lax",
       maxAge: COOKIE_MAX_AGE,
       path: "/",
@@ -51,7 +51,7 @@ function clearTokenCookie(res) {
     "Set-Cookie",
     cookie.serialize(COOKIE_NAME, "", {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
+      // secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
       expires: new Date(0),
       path: "/",
