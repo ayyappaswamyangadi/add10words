@@ -18,7 +18,7 @@ app.use(helmet());
 app.use(express.json());
 app.use(cookieParser());
 
-// Allow frontend dev (Vite) origin and cookies
+// // Allow frontend dev (Vite) origin and cookies
 const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:5173";
 app.use(
   cors({
@@ -26,6 +26,22 @@ app.use(
     credentials: true,
   })
 );
+// // Allowed client origin (must be exact: https://your-app.vercel.app)
+// const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:5173";
+// const allowedOrigins = [CLIENT_URL];
+
+// // CORS: allow explicit origin or allow non-browser (e.g. same-origin) requests
+// app.use(
+//   cors({
+//     origin: (origin, callback) => {
+//       // `origin` is undefined for same-origin requests (or tools like curl)
+//       if (!origin) return callback(null, true);
+//       if (allowedOrigins.includes(origin)) return callback(null, true);
+//       return callback(new Error("CORS policy: origin not allowed"));
+//     },
+//     credentials: true,
+//   })
+// );
 
 app.use(rateLimit({ windowMs: 60 * 1000, max: 120 }));
 
@@ -52,7 +68,9 @@ app.use("/api/words", wordsRoutes);
 
 app.get("/api/health", (req, res) => res.json({ ok: true }));
 
-const PORT = process.env.PORT || 4000;
-app.listen(PORT, () =>
-  console.log(`Backend running on http://localhost:${PORT}`)
-);
+// const PORT = process.env.PORT || 4000;
+// app.listen(PORT, () =>
+//   console.log(`Backend running on http://localhost:${PORT}`)
+// );
+// Export app for Vercel serverless functions
+export default app;
