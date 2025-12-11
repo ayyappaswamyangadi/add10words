@@ -6,13 +6,16 @@
       "use": "@vercel/static-build",
       "config": { "distDir": "dist" }
     },
-    {
-      "src": "backend/api/**/*.js",
-      "use": "@vercel/node"
-    }
+    { "src": "backend/api/**/*.js", "use": "@vercel/node" }
   ],
   "routes": [
     { "src": "/api/(.*)", "dest": "/backend/api/$1" },
-    { "src": "/(.*)", "dest": "/frontend/dist/$1" }
+
+    {
+      "src": "/(.*\\.(?:js|css|png|jpg|jpeg|svg|ico|json|map))",
+      "dest": "/frontend/dist/$1"
+    },
+
+    { "src": "/(.*)", "dest": "/frontend/dist/index.html" }
   ]
 }
