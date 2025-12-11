@@ -10,8 +10,8 @@ import rateLimit from "express-rate-limit";
 import cookieParser from "cookie-parser";
 
 //routes
-import authRoutes from "./routes/auth.js";
-import wordsRoutes from "./routes/words.js";
+import authRoutes from "../routes/auth.js";
+import wordsRoutes from "../routes/words.js";
 
 const app = express();
 app.use(helmet());
