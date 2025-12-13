@@ -8,7 +8,7 @@ import jwt from "jsonwebtoken";
 import cookie from "cookie";
 import nodemailer from "nodemailer";
 
-import User from "../backend/models/User.js";
+import User from "../models/User.js";
 
 const router = express.Router();
 

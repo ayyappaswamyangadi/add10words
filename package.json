@@ -1,5 +1,6 @@
 {
   "name": "daily10-monorepo",
+  "type": "module",
   "private": true,
   "workspaces": [
     "frontend",

@@ -10,8 +10,8 @@ import cookieParser from "cookie-parser";
 import serverless from "serverless-http";
 import { connectDB } from "../backend/lib/mongodb.js";
 //routes
-import authRoutes from "./auth.js";
-import wordsRoutes from "./words.js";
+import authRoutes from "../backend/routes/auth.js";
+import wordsRoutes from "../backend/routes/words.js";
 
 const app = express();
 app.use(helmet());
