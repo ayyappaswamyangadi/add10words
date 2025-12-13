@@ -43,7 +43,7 @@ export default function AuthProvider({
    * the error will bubble up to the caller so the UI can show messages.
    */
   const login = async (email: string, password: string) => {
-    await api.post("/api/auth/login", { email, password });
+    await api.post("/auth/login", { email, password });
     // after successful login, refresh /me to get full user object (including isVerified)
     const me = await api.get("/auth/me");
     setUser(me.data.user ?? null);
