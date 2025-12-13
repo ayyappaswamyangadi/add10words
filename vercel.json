@@ -4,18 +4,26 @@
     {
       "src": "frontend/package.json",
       "use": "@vercel/static-build",
-      "config": { "distDir": "dist" }
+      "config": {
+        "distDir": "dist"
+      }
     },
-    { "src": "backend/api/**/*.js", "use": "@vercel/node" }
+    {
+      "src": "backend/api/index.js",
+      "use": "@vercel/node"
+    }
   ],
   "routes": [
-    { "src": "/api/(.*)", "dest": "/backend/api/$1" },
-
     {
-      "src": "/(.*\\.(?:js|css|png|jpg|jpeg|svg|ico|json|map))",
-      "dest": "/frontend/dist/$1"
+      "src": "^/api/(.*)$",
+      "dest": "backend/api/index.js"
     },
-
-    { "src": "/(.*)", "dest": "/frontend/dist/index.html" }
+    {
+      "handle": "filesystem"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/frontend/dist/index.html"
+    }
   ]
 }
