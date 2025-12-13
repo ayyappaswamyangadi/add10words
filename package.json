@@ -2,7 +2,6 @@
   "name": "daily10-monorepo",
   "private": true,
   "workspaces": [
-    "api",
     "frontend",
     "backend"
   ],
