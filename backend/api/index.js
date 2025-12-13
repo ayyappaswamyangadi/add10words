@@ -3,15 +3,14 @@ import dotenv from "dotenv";
 dotenv.config();
 
 import express from "express";
-import mongoose from "mongoose";
 import cors from "cors";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import cookieParser from "cookie-parser";
-
+import serverless from "serverless-http";
 //routes
-import authRoutes from "../routes/auth.js";
-import wordsRoutes from "../routes/words.js";
+import authRoutes from "./auth.js";
+import wordsRoutes from "./words.js";
 
 const app = express();
 app.use(helmet());
@@ -47,17 +46,17 @@ app.use(rateLimit({ windowMs: 60 * 1000, max: 120 }));
 
 const MONGODB_URI = process.env.MONGODB_URI;
 if (!MONGODB_URI) {
-  console.error("Missing MONGODB_URI in env");
-  process.exit(1);
+  throw new Error("Missing MONGODB_URI in environment variables");
 }
 
-mongoose
-  .connect(MONGODB_URI)
-  .then(() => console.log("MongoDB connected"))
-  .catch((err) => {
-    console.error("MongoDB connection error", err);
-    process.exit(1);
-  });
+await connectDB(MONGODB_URI);
+// mongoose
+//   .connect(MONGODB_URI)
+//   .then(() => console.log("MongoDB connected"))
+//   .catch((err) => {
+//     console.error("MongoDB connection error", err);
+//     process.exit(1);
+//   });
 
 /*
   Mount API routes under /api so frontend dev/proxy and production serverless
@@ -73,4 +72,4 @@ app.get("/api/health", (req, res) => res.json({ ok: true }));
 //   console.log(`Backend running on http://localhost:${PORT}`)
 // );
 // Export app for Vercel serverless functions
-export default app;
+export default serverless(app);
