@@ -21,12 +21,23 @@ app.use(cookieParser());
 
 // // Allow frontend dev (Vite) origin and cookies
 const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:5173";
+// app.use(
+//   cors({
+//     origin: CLIENT_URL,
+//     credentials: true,
+//   })
+// );
 app.use(
   cors({
     origin: CLIENT_URL,
     credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
+
+app.options("*", cors());
+
 // // Allowed client origin (must be exact: https://your-app.vercel.app)
 // const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:5173";
 // const allowedOrigins = [CLIENT_URL];
@@ -44,7 +55,14 @@ app.use(
 //   })
 // );
 
-app.use(rateLimit({ windowMs: 60 * 1000, max: 120 }));
+// app.use(rateLimit({ windowMs: 60 * 1000, max: 120 }));
+app.use(
+  rateLimit({
+    windowMs: 60 * 1000,
+    max: 120,
+    skip: (req) => req.method === "OPTIONS",
+  })
+);
 
 const MONGODB_URI = process.env.MONGODB_URI;
 if (!MONGODB_URI) {
