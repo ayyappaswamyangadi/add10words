@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "buildCommand": "npm install && npm run build:frontend",
+  "buildCommand": "npm install --include=dev && npm run build:frontend",
   "outputDirectory": "frontend/dist",
   "routes": [
     {
