@@ -8,6 +8,8 @@ import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import cookieParser from "cookie-parser";
 import serverless from "serverless-http";
+import { connectDB } from "../lib/mongodb.js";
+
 //routes
 import authRoutes from "./auth.js";
 import wordsRoutes from "./words.js";

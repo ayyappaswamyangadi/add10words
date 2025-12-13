@@ -8,7 +8,7 @@ import jwt from "jsonwebtoken";
 
 import Word from "../models/Word.js";
 import User from "../models/User.js"; // <--- owner lookup
-import { connectToDatabase } from "../lib/mongodb.js";
+import { connectDB } from "../lib/mongodb.js";
 
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) {
@@ -81,7 +81,7 @@ function normalizeDocs(docs = []) {
 export default async function handler(req, res) {
   // ensure DB
   try {
-    await connectToDatabase();
+    await connectDB();
   } catch (err) {
     console.error("Failed to connect to DB:", err);
     return res.status(500).json({ error: "DB connection failed" });

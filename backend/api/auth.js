@@ -1,12 +1,13 @@
 // api/auth.js
+import dotenv from "dotenv";
+dotenv.config();
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import cookie from "cookie";
-import crypto from "crypto";
 import nodemailer from "nodemailer";
 
 import User from "../models/User.js";
-import { connectToDatabase } from "../lib/mongodb.js";
+import { connectDB } from "../lib/mongodb.js";
 
 const JWT_SECRET = process.env.JWT_SECRET;
 const COOKIE_NAME = "token";
@@ -27,18 +28,14 @@ if (!JWT_SECRET) {
   console.warn("JWT_SECRET not set — tokens will not be valid.");
 }
 
-if (!JWT_SECRET) {
-  console.warn("JWT_SECRET not set — tokens will not be valid.");
-}
-
 /* helper to set cookie */
 function setTokenCookie(res, token) {
-  const isProd = process.env.NODE_ENV === "production";
+  // const isProd = process.env.NODE_ENV === "production";
   res.setHeader(
     "Set-Cookie",
     cookie.serialize(COOKIE_NAME, token, {
       httpOnly: true,
-      secure: isProd,
+      // secure: isProd,
       sameSite: "lax",
       // sameSite: "none",
       maxAge: COOKIE_MAX_AGE,
@@ -52,7 +49,7 @@ function clearTokenCookie(res) {
     "Set-Cookie",
     cookie.serialize(COOKIE_NAME, "", {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
+      // secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
       // sameSite: "none",
       expires: new Date(0),
@@ -136,7 +133,7 @@ function getUserFromReq(req) {
 }
 
 export default async function handler(req, res) {
-  await connectToDatabase();
+  await connectDB();
   const { method } = req;
   const action = String(req.query.action || "");
 
