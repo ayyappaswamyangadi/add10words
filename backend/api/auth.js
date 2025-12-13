@@ -9,7 +9,6 @@ import cookie from "cookie";
 import nodemailer from "nodemailer";
 
 import User from "../models/User.js";
-import { connectDB } from "../lib/mongodb.js";
 
 const router = express.Router();
 
@@ -91,7 +90,6 @@ async function sendVerificationEmail({ to, token, name }) {
 
 // POST /api/auth/signup
 router.post("/signup", async (req, res) => {
-  await connectDB();
   const { email, password, name } = req.body;
 
   if (!email || !password || !name) {
@@ -126,7 +124,6 @@ router.post("/signup", async (req, res) => {
 
 // GET /api/auth/verify-email?token=...
 router.get("/verify-email", async (req, res) => {
-  await connectDB();
   const { token } = req.query;
   if (!token) return res.status(400).json({ error: "Token required" });
 
@@ -169,7 +166,6 @@ router.get("/verify-email", async (req, res) => {
 
 // POST /api/auth/login
 router.post("/login", async (req, res) => {
-  await connectDB();
   const { email, password } = req.body;
 
   const user = await User.findOne({ email: email.toLowerCase() });
@@ -194,7 +190,6 @@ router.post("/login", async (req, res) => {
 
 // GET /api/auth/me
 router.get("/me", async (req, res) => {
-  await connectDB();
   const cookies = req.headers.cookie ? cookie.parse(req.headers.cookie) : {};
   const token = cookies[COOKIE_NAME];
   if (!token) return res.json({ user: null });

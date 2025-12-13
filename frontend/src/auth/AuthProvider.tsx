@@ -24,10 +24,10 @@ export default function AuthProvider({
     let mounted = true;
     (async () => {
       try {
-        const res = await api.get("/auth?action=me");
+        const res = await api.get("/auth/me");
         if (mounted) setUser(res.data.user ?? null);
       } catch (e) {
-        console.error("Failed to fetch /auth?action=me", e);
+        console.error("Failed to fetch /auth/me", e);
         if (mounted) setUser(null);
       } finally {
         if (mounted) setLoading(false);
@@ -43,9 +43,9 @@ export default function AuthProvider({
    * the error will bubble up to the caller so the UI can show messages.
    */
   const login = async (email: string, password: string) => {
-    await api.post("/auth?action=login", { email, password });
+    await api.post("/auth/login", { email, password });
     // after successful login, refresh /me to get full user object (including isVerified)
-    const me = await api.get("/auth?action=me");
+    const me = await api.get("/auth/me");
     setUser(me.data.user ?? null);
     return me.data.user;
   };
@@ -59,7 +59,7 @@ export default function AuthProvider({
     email: string,
     password: string
   ): Promise<SignupResponse> => {
-    const res = await api.post("/auth?action=signup", {
+    const res = await api.post("/auth/signup", {
       name,
       email,
       password,
@@ -70,7 +70,7 @@ export default function AuthProvider({
 
   const logout = async () => {
     try {
-      await api.post("/auth?action=logout");
+      await api.post("/auth/logout");
     } catch (e) {
       console.warn("Logout error", e);
     } finally {

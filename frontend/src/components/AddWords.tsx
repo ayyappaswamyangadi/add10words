@@ -169,7 +169,7 @@ export default function AddWords({ onAdded }: AddWordsProps = {}) {
 
     setLoading(true);
     try {
-      const res = await api.post("/words?action=validate", { words: parsed });
+      const res = await api.post("/words/validate", { words: parsed });
       // backend returns shape: { ok: true/false, conflicts: { db:[], inBatch:[] } }
       const c: Conflicts = res.data?.conflicts ?? { db: [], inBatch: [] };
       if ((c && c.db && c.db.length) || (c && c.inBatch && c.inBatch.length)) {
