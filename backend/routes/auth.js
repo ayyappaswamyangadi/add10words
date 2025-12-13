@@ -1,4 +1,4 @@
-// backend/api/auth.js
+// backend/routes/auth.js
 import dotenv from "dotenv";
 dotenv.config();
 
