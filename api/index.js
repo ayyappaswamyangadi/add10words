@@ -1,6 +1,20 @@
-export default function handler(req, res) {
-  return res.status(200).json({ ok: "INDEX FILE HIT" });
-}
+import express from "express";
+import serverless from "serverless-http";
+
+const app = express();
+app.use(express.json());
+
+// 🔴 Minimal proof route
+app.post("/auth/login", (req, res) => {
+  return res.status(200).json({ ok: "EXPRESS LOGIN HIT" });
+});
+
+app.get("/health", (req, res) => {
+  return res.json({ ok: true });
+});
+
+export default serverless(app);
+
 // /api/index.js
 // import dotenv from "dotenv";
 // dotenv.config();
