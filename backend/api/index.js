@@ -1,4 +1,4 @@
-// backend/server.js
+// backend/api/index.js
 import dotenv from "dotenv";
 dotenv.config();
 
@@ -54,17 +54,17 @@ if (!MONGODB_URI) {
 }
 
 await connectDB(MONGODB_URI);
-app.use("/api/auth", authRoutes);
-app.use("/api/words", wordsRoutes);
+app.use("/auth", authRoutes);
+app.use("/words", wordsRoutes);
 
 app.get("/api/health", (req, res) => res.json({ ok: true }));
 
-if (process.env.NODE_ENV !== "production") {
-  const PORT = process.env.PORT || 4000;
-  app.listen(PORT, () =>
-    console.log(`Backend running on http://localhost:${PORT}`)
-  );
-}
+// if (process.env.NODE_ENV !== "production") {
+//   const PORT = process.env.PORT || 4000;
+//   app.listen(PORT, () =>
+//     console.log(`Backend running on http://localhost:${PORT}`)
+//   );
+// }
 app.post("/api/auth/login", (req, res) => {
   res.json({ ok: "DIRECT LOGIN ROUTE HIT" });
 });
