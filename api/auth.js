@@ -1,4 +1,4 @@
-// backend/auth.js
+// backend/api/auth.js
 import dotenv from "dotenv";
 dotenv.config();
 
@@ -8,7 +8,7 @@ import jwt from "jsonwebtoken";
 import cookie from "cookie";
 import nodemailer from "nodemailer";
 
-import User from "../models/User.js";
+import User from "../backend/models/User.js";
 
 const router = express.Router();
 

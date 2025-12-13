@@ -6,8 +6,8 @@ import express from "express";
 import cookie from "cookie";
 import jwt from "jsonwebtoken";
 
-import Word from "../models/Word.js";
-import User from "../models/User.js";
+import Word from "../backend/models/Word.js";
+import User from "../backend/models/User.js";
 
 const router = express.Router();
 
