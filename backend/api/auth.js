@@ -51,7 +51,7 @@ const SMTP_PORT = Number(process.env.SMTP_PORT || 465);
 const SMTP_USER = process.env.SMTP_USER;
 const SMTP_PASS = process.env.SMTP_PASS;
 const FROM_EMAIL = process.env.FROM_EMAIL || SMTP_USER;
-const FRONTEND_BASE = process.env.FRONTEND_BASE_URL || "http://localhost:5173";
+const FRONTEND_BASE = process.env.CLIENT_URL || "http://localhost:5173";
 
 function createTransport() {
   if (!SMTP_USER || !SMTP_PASS) return null;

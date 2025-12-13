@@ -20,12 +20,14 @@ app.use(cookieParser());
 
 // // Allow frontend dev (Vite) origin and cookies
 const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:5173";
+
 // app.use(
 //   cors({
 //     origin: CLIENT_URL,
 //     credentials: true,
 //   })
 // );
+
 app.use(
   cors({
     origin: CLIENT_URL,
@@ -63,5 +65,8 @@ if (process.env.NODE_ENV !== "production") {
     console.log(`Backend running on http://localhost:${PORT}`)
   );
 }
+app.post("/api/auth/login", (req, res) => {
+  res.json({ ok: "DIRECT LOGIN ROUTE HIT" });
+});
 // Export app for Vercel serverless functions
 export default serverless(app);
